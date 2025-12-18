@@ -4,256 +4,243 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image
 
-# -------------------------------------------------
-# Config persistence
-# -------------------------------------------------
+# ------------------------------
+# Config loading/saving
+# ------------------------------
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+CONFIG_FILE = Path(__file__).parent / "config.json"
 
-
-def load_config():
-    if CONFIG_PATH.exists():
+def load_settings():
+    """Attempt to load previous config, fallback to defaults if something goes wrong."""
+    if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+            with open(CONFIG_FILE, "r", encoding="utf-8") as conf_file:
+                return json.load(conf_file)
+        except Exception as err:
+            # Might just be corrupt or half-written
+            print("Failed to load config:", err)
     return {}
 
-
-def save_config():
-    data = {
-        "source": source_var.get(),
-        "destination": dest_var.get(),
-        "scale": scale_var.get(),
-        "overwrite": overwrite_var.get(),
-        "resample": resample_var.get(),
-        "suffix": suffix_var.get(),
-        "recursive": recursive_var.get(),
+def save_settings():
+    # Grabbing current UI values for persistence
+    config_data = {
+        "source": source_path.get(),
+        "destination": dest_path.get(),
+        "scale": scale_input.get(),
+        "overwrite": overwrite_flag.get(),
+        "resample": resample_choice.get(),
+        "suffix": suffix_text.get(),
+        "recursive": include_subdirs.get(),
     }
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+
+    with open(CONFIG_FILE, "w", encoding="utf-8") as out_file:
+        json.dump(config_data, out_file, indent=2)
 
 
-# -------------------------------------------------
-# Constants
-# -------------------------------------------------
+# ------------------------------
+# Some global constants
+# ------------------------------
 
-RESAMPLE_MAP = {
+RESAMPLING_OPTIONS = {
     "nearest": Image.NEAREST,
     "bilinear": Image.BILINEAR,
-    "bicubic": Image.BICUBIC,
+    "bicubic": Image.BICUBIC
 }
 
-SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tga")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tga")  # Might add more later
 
 
-# -------------------------------------------------
-# UI callbacks
-# -------------------------------------------------
+# ------------------------------
+# UI helper functions
+# ------------------------------
 
-def choose_source():
-    path = filedialog.askdirectory()
-    if path:
-        source_var.set(path)
+def browse_source():
+    selected = filedialog.askdirectory()
+    if selected:
+        source_path.set(selected)
 
+def browse_destination():
+    selected = filedialog.askdirectory()
+    if selected:
+        dest_path.set(selected)
 
-def choose_destination():
-    path = filedialog.askdirectory()
-    if path:
-        dest_var.set(path)
+def apply_scale_from_preset(_=None):
+    val = preset_option.get()
+    if val.isdigit():
+        scale_input.set(int(val))  # Setting directly from combo
 
-
-def apply_preset(event=None):
-    value = preset_var.get()
-    if value.isdigit():
-        scale_var.set(int(value))
-
-
-def clear_preset_on_manual_scale(*_):
-    preset_var.set("")
+def wipe_preset_if_manual(*_):  # Tkinter sends args we ignore
+    preset_option.set("")  # Reset the dropdown if user manually changes scale
 
 
-def on_run():
-    save_config()
+# ------------------------------
+# Main operation
+# ------------------------------
 
-    src_root = Path(source_var.get())
-    dst_root = Path(dest_var.get())
-    scale = scale_var.get() / 100.0
-    overwrite = overwrite_var.get()
-    recursive = recursive_var.get()
-    resample = RESAMPLE_MAP[resample_var.get()]
-    suffix = suffix_var.get().strip()
+def run_scaling():
+    save_settings()  # First, persist current config
 
-    if not src_root.is_dir():
-        messagebox.showerror("Error", "Invalid source folder.")
+    src_dir = Path(source_path.get())
+    dst_dir = Path(dest_path.get())
+    scale_factor = scale_input.get() / 100.0  # convert to 0-1
+    allow_overwrite = overwrite_flag.get()
+    is_recursive = include_subdirs.get()
+    chosen_resample = RESAMPLING_OPTIONS[resample_choice.get()]
+    suffix = suffix_text.get().strip()
+
+    # Sanity checks
+    if not src_dir.is_dir():
+        messagebox.showerror("Error", "Source folder doesn't exist.")
+        return
+    if not dst_dir.is_dir():
+        messagebox.showerror("Error", "Destination folder doesn't exist.")
+        return
+    if src_dir.resolve() == dst_dir.resolve():
+        messagebox.showerror("Error", "Can't use the same folder for input and output.")
+        return
+    if scale_factor <= 0:
+        messagebox.showerror("Error", "Scale must be more than 0%.")
         return
 
-    if not dst_root.is_dir():
-        messagebox.showerror("Error", "Invalid destination folder.")
-        return
-
-    if src_root.resolve() == dst_root.resolve():
-        messagebox.showerror(
-            "Error", "Source and destination folders must be different."
-        )
-        return
-
-    if scale <= 0:
-        messagebox.showerror("Error", "Scale must be greater than 0%.")
-        return
-
-    # Choose traversal mode
-    if recursive:
-        files = [
-            f for f in src_root.rglob("*")
-            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-        ]
+    # Gather images
+    if is_recursive:
+        image_files = [f for f in src_dir.rglob("*") if f.suffix.lower() in IMAGE_EXTENSIONS and f.is_file()]
     else:
-        files = [
-            f for f in src_root.iterdir()
-            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-        ]
+        image_files = [f for f in src_dir.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS and f.is_file()]
 
-    if not files:
-        messagebox.showinfo("Info", "No supported images found.")
+    if not image_files:
+        messagebox.showinfo("Info", "No images found.")
         return
 
-    progress["maximum"] = len(files)
-    progress["value"] = 0
+    progress_bar["maximum"] = len(image_files)
+    progress_bar["value"] = 0
     root.update_idletasks()
 
-    processed = skipped = errors = 0
+    total_ok = total_skipped = total_failed = 0
 
-    for file in files:
+    for img_file in image_files:
         try:
-            if recursive:
-                relative = file.relative_to(src_root)
-                out_dir = dst_root / relative.parent
+            if is_recursive:
+                rel_path = img_file.relative_to(src_dir)
+                output_dir = dst_dir / rel_path.parent
             else:
-                out_dir = dst_root
+                output_dir = dst_dir
 
-            out_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-            out_name = (
-                f"{file.stem}{suffix}{file.suffix}"
-                if suffix else file.name
-            )
-            out_path = out_dir / out_name
+            output_filename = f"{img_file.stem}{suffix}{img_file.suffix}" if suffix else img_file.name
+            target_path = output_dir / output_filename
 
-            if out_path.exists() and not overwrite:
-                skipped += 1
+            if target_path.exists() and not allow_overwrite:
+                total_skipped += 1
             else:
-                with Image.open(file) as img:
-                    new_size = (
-                        max(1, int(img.width * scale)),
-                        max(1, int(img.height * scale)),
-                    )
+                with Image.open(img_file) as im:
+                    new_w = max(1, int(im.width * scale_factor))
+                    new_h = max(1, int(im.height * scale_factor))
+                    resized = im.resize((new_w, new_h), resample=chosen_resample)
 
-                    resized = img.resize(new_size, resample=resample)
+                    # Slightly conservative save settings for JPEG
+                    save_opts = {}
+                    if im.format == "JPEG":
+                        save_opts["quality"] = 95
+                        save_opts["subsampling"] = 0
 
-                    save_kwargs = {}
-                    if img.format == "JPEG":
-                        save_kwargs["quality"] = 95
-                        save_kwargs["subsampling"] = 0
+                    resized.save(target_path, format=im.format, **save_opts)
+                    total_ok += 1
 
-                    resized.save(out_path, format=img.format, **save_kwargs)
-                    processed += 1
+        except Exception as problem:
+            # Would be better to log this somewhere
+            total_failed += 1
 
-        except Exception:
-            errors += 1
-
-        progress["value"] += 1
+        progress_bar["value"] += 1
         root.update_idletasks()
 
-    messagebox.showinfo(
-        "Done",
-        f"Processed: {processed}\nSkipped: {skipped}\nErrors: {errors}",
-    )
+    # Wrap it up
+    messagebox.showinfo("Done", f"Processed: {total_ok}\nSkipped: {total_skipped}\nErrors: {total_failed}")
 
 
-# -------------------------------------------------
-# UI setup
-# -------------------------------------------------
+# ------------------------------
+# UI creation
+# ------------------------------
 
 root = tk.Tk()
 root.title("Image Scaler")
 root.resizable(False, False)
 
+padding_opts = {"padx": 10, "pady": 5}
+
+# Some basic layout control
 root.columnconfigure(0, weight=0)
 root.columnconfigure(1, weight=1)
-root.columnconfigure(2, weight=0)
 
-padding = {"padx": 10, "pady": 5}
+# UI state variables
+source_path = tk.StringVar()
+dest_path = tk.StringVar()
+scale_input = tk.IntVar(value=50)
+preset_option = tk.StringVar()
+overwrite_flag = tk.BooleanVar(value=False)
+include_subdirs = tk.BooleanVar(value=True)
+resample_choice = tk.StringVar(value="bicubic")
+suffix_text = tk.StringVar()
 
-source_var = tk.StringVar()
-dest_var = tk.StringVar()
-scale_var = tk.IntVar(value=50)
-preset_var = tk.StringVar()
-overwrite_var = tk.BooleanVar(value=False)
-recursive_var = tk.BooleanVar(value=True)
-resample_var = tk.StringVar(value="bicubic")
-suffix_var = tk.StringVar()
+scale_input.trace_add("write", wipe_preset_if_manual)
 
-scale_var.trace_add("write", clear_preset_on_manual_scale)
+# Try loading settings from last time
+prev_config = load_settings()
+source_path.set(prev_config.get("source", ""))
+dest_path.set(prev_config.get("destination", ""))
+scale_input.set(prev_config.get("scale", 50))
+overwrite_flag.set(prev_config.get("overwrite", False))
+include_subdirs.set(prev_config.get("recursive", True))
+resample_choice.set(prev_config.get("resample", "bicubic"))
+suffix_text.set(prev_config.get("suffix", ""))
 
-config = load_config()
-source_var.set(config.get("source", ""))
-dest_var.set(config.get("destination", ""))
-scale_var.set(config.get("scale", 50))
-overwrite_var.set(config.get("overwrite", False))
-recursive_var.set(config.get("recursive", True))
-resample_var.set(config.get("resample", "bicubic"))
-suffix_var.set(config.get("suffix", ""))
+# Building the actual UI
+ttk.Label(root, text="Source folder").grid(row=0, column=0, sticky="w", **padding_opts)
+ttk.Entry(root, textvariable=source_path).grid(row=0, column=1, sticky="ew", **padding_opts)
+ttk.Button(root, text="Browse", command=browse_source).grid(row=0, column=2, **padding_opts)
 
-ttk.Label(root, text="Source folder").grid(row=0, column=0, sticky="w", **padding)
-ttk.Entry(root, textvariable=source_var).grid(row=0, column=1, sticky="ew", **padding)
-ttk.Button(root, text="Browse", command=choose_source).grid(row=0, column=2, **padding)
+ttk.Label(root, text="Destination folder").grid(row=1, column=0, sticky="w", **padding_opts)
+ttk.Entry(root, textvariable=dest_path).grid(row=1, column=1, sticky="ew", **padding_opts)
+ttk.Button(root, text="Browse", command=browse_destination).grid(row=1, column=2, **padding_opts)
 
-ttk.Label(root, text="Destination folder").grid(row=1, column=0, sticky="w", **padding)
-ttk.Entry(root, textvariable=dest_var).grid(row=1, column=1, sticky="ew", **padding)
-ttk.Button(root, text="Browse", command=choose_destination).grid(row=1, column=2, **padding)
-
-ttk.Label(root, text="Scale (%)").grid(row=2, column=0, sticky="w", **padding)
-ttk.Spinbox(root, from_=1, to=100, textvariable=scale_var, width=6).grid(
-    row=2, column=1, sticky="w", **padding
+ttk.Label(root, text="Scale (%)").grid(row=2, column=0, sticky="w", **padding_opts)
+ttk.Spinbox(root, from_=1, to=100, textvariable=scale_input, width=6).grid(
+    row=2, column=1, sticky="w", **padding_opts
 )
 
-preset_box = ttk.Combobox(
+preset_combo = ttk.Combobox(
     root,
-    textvariable=preset_var,
+    textvariable=preset_option,
     values=["25", "50", "75", "100"],
     state="readonly",
     width=6,
 )
-preset_box.grid(row=2, column=1, sticky="e", **padding)
-preset_box.bind("<<ComboboxSelected>>", apply_preset)
+preset_combo.grid(row=2, column=1, sticky="e", **padding_opts)
+preset_combo.bind("<<ComboboxSelected>>", apply_scale_from_preset)
 
-ttk.Label(root, text="Resampling").grid(row=3, column=0, sticky="w", **padding)
+ttk.Label(root, text="Resampling").grid(row=3, column=0, sticky="w", **padding_opts)
 ttk.Combobox(
     root,
-    textvariable=resample_var,
-    values=["nearest", "bilinear", "bicubic"],
+    textvariable=resample_choice,
+    values=list(RESAMPLING_OPTIONS.keys()),
     state="readonly",
     width=12,
-).grid(row=3, column=1, sticky="w", **padding)
+).grid(row=3, column=1, sticky="w", **padding_opts)
 
-ttk.Label(root, text="Filename suffix").grid(row=4, column=0, sticky="w", **padding)
-ttk.Entry(root, textvariable=suffix_var, width=20).grid(
-    row=4, column=1, sticky="w", **padding
+ttk.Label(root, text="Filename suffix").grid(row=4, column=0, sticky="w", **padding_opts)
+ttk.Entry(root, textvariable=suffix_text, width=20).grid(row=4, column=1, sticky="w", **padding_opts)
+
+ttk.Checkbutton(root, text="Recursive (include subfolders)", variable=include_subdirs).grid(
+    row=5, column=1, sticky="w", **padding_opts
+)
+ttk.Checkbutton(root, text="Overwrite existing files", variable=overwrite_flag).grid(
+    row=6, column=1, sticky="w", **padding_opts
 )
 
-ttk.Checkbutton(
-    root, text="Recursive (include subfolders)", variable=recursive_var
-).grid(row=5, column=1, sticky="w", **padding)
+progress_bar = ttk.Progressbar(root, length=300, mode="determinate")
+progress_bar.grid(row=7, column=0, columnspan=3, padx=10, pady=(10, 5))
 
-ttk.Checkbutton(
-    root, text="Overwrite existing files", variable=overwrite_var
-).grid(row=6, column=1, sticky="w", **padding)
-
-progress = ttk.Progressbar(root, length=300, mode="determinate")
-progress.grid(row=7, column=0, columnspan=3, padx=10, pady=(10, 5))
-
-ttk.Button(root, text="Run", command=on_run).grid(row=8, column=1, pady=10)
+ttk.Button(root, text="Run", command=run_scaling).grid(row=8, column=1, pady=10)
 
 root.mainloop()
