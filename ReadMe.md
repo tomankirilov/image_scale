@@ -1,10 +1,7 @@
 \# Image Scaler Tool
 
-
-
 A small Windows desktop utility for batch scaling images (PNG / JPG / TGA).
-
-
+<img width="627" height="509" alt="image" src="https://github.com/user-attachments/assets/9be2cf59-cae0-4533-8496-bfaabe9d7bd4" />
 
 Features:
 
